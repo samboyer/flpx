@@ -1,6 +1,6 @@
+![FLPx banner](docs/banner.jpg)
 # [EXPERIMENTAL] FLPx - Read, write, edit & merge .flp files
 
-![FLPx banner](docs/banner.jpg)
 
 Primarily, FLPx attempts to give developers an easy interface to read and write Image Line's FLP files for FL Studio. Eventually, the tool will also support diffing and merging FLPs, allowing for version control via git etc.
 
