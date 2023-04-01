@@ -1,6 +1,8 @@
-# [EXPERIMENTAL] FLPX - Read, write, edit & merge .flp files
+# [EXPERIMENTAL] FLPx - Read, write, edit & merge .flp files
 
-Primarily, FLPX attempts to give developers an easy interface to read and write Image Line's FLP files for FL Studio. Eventually, the tool will also support diffing and merging FLPs, allowing for version control via git etc.
+![FLPx banner](docs/banner.jpg)
+
+Primarily, FLPx attempts to give developers an easy interface to read and write Image Line's FLP files for FL Studio. Eventually, the tool will also support diffing and merging FLPs, allowing for version control via git etc.
 
 ## Module breakdown
 
@@ -69,4 +71,4 @@ Primarily, FLPX attempts to give developers an easy interface to read and write 
 
 ## Terminology
 
-- Ghost pattern: patterns can be added to the Playlist that don't actually exist yet - this is most easily observed by srolling down the Current Pattern dropdown, which lets you go well past your last pattern. 
+- *Ghost pattern*: patterns can be added to the Playlist that don't actually exist yet - this is most easily observed by srolling down the Current Pattern dropdown, which lets you go well past your last pattern. 
