@@ -10,9 +10,7 @@ Primarily, FLPx attempts to give developers an easy interface to read and write 
   - Currently supports:
     - playlist/arrangement decoding
   - Missing features/functions:
-    - mixer channels/effects parsing
-    - automation clips
-    - missing event handlers for events (166, 165, 236 - possibly playlist item-specific) and (143,144,155,221,226,228,229,32,36,97 - unknown)
+    - automation clip curve decoding
 - flp_write.py - .flp writing - 10% complete
   - Currently supports:
     - write generic project events
@@ -39,20 +37,26 @@ Primarily, FLPx attempts to give developers an easy interface to read and write 
 
 ## To-do:
 - Clean-up code
-   - Use custom classes/enums to store parsed project data instead of dicts, put them all in a _defs.py file
-     - better for API inputs/outputs, and type checking 
-     - harder to (de)serialize?
-   - Add type signatures to all functions
-     - need a type for `project`...
+  - Add type signatures to all functions
+  - Add/move to_bytes methods to their respective classses
   - move inline notes to...somewhere else
-  - move all __name__ == 'main' bits of code to a seperate script 
   - decide on a single name for various FLP things
-    - Clip vs Pattern vs playlist item
+    - playlist clip vs playlist item
+    - playlist vs arrangement
+    - channel vs generator
+    - mixer track vs mixer insert vs mixer channel
   - move debug print functions to debug.py(?)
-- MVP FLP write-back / round-trip
-  -  fill in the gaps in write_FLP
-- Finish reader
-  - ???
+  - move all __name__ == 'main' bits of code to a seperate script 
+- FLP write-back / round-trip
+  - fill in read_FLP gaps 
+    - Automation clip data
+    - 'Missing event handler for event ___'
+  - fill in the gaps in write_FLP
+- Actually parse Pattern data
+- Actually parse Channel data (FLP_ChanParams)
+- FL 21.0 support
+  - AudioClip fade in/out, volume, blending
+- Work out how demo/paid file checking/DRM works & how to maintain it 
 - MVP CLI
   - FLP to JSON, JSON to FLP
 - Testing
@@ -68,6 +72,9 @@ Primarily, FLPx attempts to give developers an easy interface to read and write 
 - Three-way merge via API & CLI
 - Git merge driver
 
+### Long-term/'nice to have'
+- clean_project(): deselect all playlist items, unmute all mixer channels & playlist tracks, set position to 0, etc. (essentially just normalise the file a little)
+- make_empty_project(): return a Project with sane projectInfo values set
 
 ## Terminology
 

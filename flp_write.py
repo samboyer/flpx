@@ -6,7 +6,9 @@
 
 
 from typing import BinaryIO, Union
-from flp_read import eventIdToName
+
+from flp_read import eid_to_ename, ename_to_eid
+from _types import *
 
 
 # CONSTANTS
@@ -40,7 +42,11 @@ def _event_size_to_bytes(s: int) -> bytes:
     return out
 
 
-def _write_event(f: BinaryIO, eventId: int, data: Union[int, bytes]) -> None:
+def _write_event(
+    f: BinaryIO, eventId: Union[int, str], data: Union[int, bytes]
+) -> None:
+    if isinstance(eventId, str):
+        eventId = ename_to_eid(eventId)
     f.write(itob(eventId, 1))
     # content is either int or bytes, depending on eventID
     if eventId < 64:
@@ -55,7 +61,34 @@ def _write_event(f: BinaryIO, eventId: int, data: Union[int, bytes]) -> None:
         f.write(data)
 
 
-def write_FLP(filepath, project):
+def _make_arrangement_data(arrangement: PlaylistArrangement) -> bytes:
+    size = 32 * len(arrangement.items)
+    out = b""
+    for item in arrangement.items:
+        item_bytes = (
+            itob(item.start, 4)  # 0-4
+            + b"\0\0"  # 4-6
+            + itob(
+                item.clipIndex + 20481
+                if item.itemType == "channel"
+                else item.clipIndex,
+                2,
+            )  # 6-8
+            + itob(item.length, 4)  # 8-12
+            + itob(500 - item.track, 4)  # 12-16
+            + item.misc  # 16-20
+            + b"\0\0\0\0"  # 20-24
+            + itob(item.clipStart, 4)  # 24-28
+            + itob(item.clipEnd, 4)  # 28-32
+        )
+        assert len(item_bytes) == 32
+        out += item_bytes
+        # TODO handle muted, selected members (edit .misc?)
+    assert len(out) == size
+    return out
+
+
+def write_FLP(filepath: str, project: Project) -> None:
     f = open(filepath, "wb")
 
     # write header
@@ -72,8 +105,8 @@ def write_FLP(filepath, project):
 
     # write global project vars
     def writeGenericProjectEvent(eventId):
-        name = eventIdToName(eventId)  # the name I've given to this event
-        _write_event(f, eventId, project["projectInfo"][name])
+        name = eid_to_ename(eventId)  # the name I've given to this event
+        _write_event(f, eventId, project.projectInfo[name])
 
     # (see FLP layout grammar for an explanation of these event IDs)
     for eventId in [
@@ -104,7 +137,7 @@ def write_FLP(filepath, project):
         writeGenericProjectEvent(eventId)
 
     # write channel group names
-    for channelGroup in project["channelGroups"]:
+    for channelGroup in project.channelFilterGroups:
         _write_event(f, 231, _str_to_UTF16(channelGroup["name"]))
 
     # 146 CurrentChannelFilterGroup, 216 unknown
@@ -112,9 +145,13 @@ def write_FLP(filepath, project):
     writeGenericProjectEvent(216)
 
     # write pattern data
-    for pattern in project["patterns"]:
-        # TODO next:)
-        pass
+    for i, pattern in enumerate(project.patterns):
+        _write_event(f, 65, i + 1)
+        if pattern.name:
+            _write_event(f, 193, _str_to_UTF16(pattern.name))
+        for miscKey in ["PatternAutomationData", "PatternData"]:
+            if miscKey in pattern.misc:
+                _write_event(f, miscKey, pattern.misc[miscKey])
 
     # 226 Unknown
     # 226 Unknown
@@ -122,31 +159,112 @@ def write_FLP(filepath, project):
     # TODO what are these events??
 
     # write automation clip data
-    # TODO idek how to represent this yet...
+    for channel in project.channels:
+        # if channel.type == "automationClip":
+        # _write_event(f, "AutomationClipData", None)
+        # TODO need to parse it first
+        pass
 
     # write channel data
-    for channel in project["channels"]:
-        # TODO
+    for i, channel in enumerate(project.channels):
+        _write_event(f, "FLP_NewChan", i)
+        # if "name" in channel: #(pretty sure this is mandatory)
+        _write_event(f, "ChannelName", _str_to_UTF16(channel.name))
+
+        for miscKey in [
+            "FLP_NewPlugin",
+            "FLP_Enabled",
+            "FLP_LoopType",
+            "FLP_ChanType",
+            "FLP_MixSliceNum",
+            "FLP_FX",
+            "FLP_Fade_Stereo",
+            "FLP_CutOff",
+            "FLP_PreAmp",
+            "FLP_Decay",
+            "FLP_Attack",
+            "FLP_Resonance",
+            "FLP_StDel",
+            "FLP_FX3",
+            "FLP_ShiftDelay",
+            "FLP_FXSine",
+            "FLP_CutCutBy",
+            "FLP_Reverb",
+            "FLP_IntStretch",
+            "FLP_SSNote",
+            "FLP_Delay",
+            "FLP_ChanParams",
+            "ChannelName",
+            "UNKNOWN_228",
+            "ChannelEnvelopeParams",
+            "ChannelParams",
+            "ChannelFilterGroup",
+            "UNKNOWN_234",
+            "UNKNOWN_32",
+            "UNKNOWN_97",
+            "UNKNOWN_143",
+            "UNKNOWN_144",
+            "UNKNOWN_221",
+            "UNKNOWN_229",
+            "UNKNOWN_150",
+            "UNKNOWN_157",
+            "UNKNOWN_158",
+            "UNKNOWN_164",
+            "FLP_Text_SampleFileName",
+            "UNKNOWN_142",
+        ]:
+            if miscKey in channel.misc:
+                if isinstance(channel.misc[miscKey], list):
+                    for data in channel.misc[miscKey]:
+                        _write_event(f, miscKey, data)
+                else:
+                    _write_event(f, miscKey, channel.misc[miscKey])
+
         pass
 
     # write arrangement data
-    for arrangement in project["arrangements"]:
-        # TODO
-        for trackIndex in range(0, 501):
-            # TODO
-            pass
+    for i, arrangement in enumerate(project.arrangements):
+        _write_event(f, 99, i)
+        if arrangement.name:
+            _write_event(f, "ArrangementName", _str_to_UTF16(arrangement.name))
+        _write_event(f, "UNKNOWN_36", arrangement.misc["UNKNOWN_36"])
+
+        arrangement_data = _make_arrangement_data(arrangement)
+        _write_event(f, 233, arrangement_data)
+        for track in arrangement.tracks:
+            _write_event(f, "TrackInfo", track.misc["TrackInfo"])
+            if track.name:
+                _write_event(f, "TrackName", _str_to_UTF16(track.name))
 
     # more globals, see grammar
     for eventId in [100, 29, 39, 40, 31, 38]:
         writeGenericProjectEvent(eventId)
 
     # write mixer data
-    for i in range(0, 128):
-        # TODO
-        pass
+    for mixerTrack in project.mixerTracks:
+        _write_event(f, "MixerTrackInfo", mixerTrack.misc["MixerTrackInfo"])
+        if mixerTrack.name:
+            _write_event(f, "InsertName", _str_to_UTF16(mixerTrack.name))
+        for miscKey in ["PatternAutomationData", "PatternData"]:
+            if miscKey in mixerTrack.misc:
+                _write_event(f, miscKey, mixerTrack.misc[miscKey])
+        # write mixer effect slots
+        for i in range(10):
+            _write_event(f, "SlotIndex", i)
+            if i in mixerTrack.effects:
+                effect = mixerTrack.effects[i]
+                for miscKey in [
+                    "FLP_Text_PlLuginName",
+                    "FLP_NewPlugin",
+                    "UNKNOWN_155",
+                    "FLP_Color",
+                    "FLP_PluginParams",
+                ]:
+                    if miscKey in effect.misc:
+                        _write_event(f, miscKey, effect.misc[miscKey])
 
     # more globals, see grammar
-    writeGenericProjectEvent(225)
+    writeGenericProjectEvent(225)  # this is massive...
     writeGenericProjectEvent(133)
 
     # write back to the datalength
@@ -159,25 +277,36 @@ def write_FLP(filepath, project):
     f.write(itob(dataLength, 4))
 
 
-if __name__ == "__main__":
-    # _event_size_to_bytes test
-    # TODO move to a test file
-    from flp_read import readTEXTEventSize
+# _event_size_to_bytes test
+# TODO move to a test file
+def test_event_size_to_bytes():
+    from flp_read import _read_TEXT_event_size
     import random
-    import io
+    from io import BytesIO
 
     for i in range(0, 100):
         size = random.randint(0, 2**128)
         sizeBytes = _event_size_to_bytes(size)
-        f = io.BytesIO(sizeBytes)
-        parsed = readTEXTEventSize(f)
+        f = BytesIO(sizeBytes)
+        parsed = _read_TEXT_event_size(f)
         assert size == parsed, (
             "_event_size_to_bytes test failed: " f"{size} {parsed} {sizeBytes}"
         )
 
-    from flp_read import loadFLP
+
+if __name__ == "__main__":
+    test_event_size_to_bytes()
+
+    from flp_read import load_FLP
 
     print("loading...")
-    project = loadFLP("test comment.flp")
+    project = load_FLP("test/files/test_comment.flp")
     print("writing...")
-    write_FLP("testWrite.flp", project)
+    write_FLP("test_comment_OUT.flp", project)
+
+    orig_file_len = len(open("test/files/test_comment.flp", "rb").read())
+    new_file_len = len(open("test_comment_OUT.flp", "rb").read())
+    print(f"Original file: {orig_file_len} bytes")
+    print(
+        f"New file: {new_file_len} bytes ({int(new_file_len/orig_file_len*100)}% of original file)"
+    )

@@ -6,7 +6,9 @@
 
 import hashlib
 import sys
+from dataclasses import dataclass, field
 
+from _types import *
 import fl_helpers
 
 
@@ -25,7 +27,7 @@ DATACHUNKID = b"FLdt"
 
 # UTIL FUNCTIONS
 def error(msg):
-    raise Exception("Error: " + msg, file=sys.stderr)
+    raise Exception("Error: " + msg)
 
 
 def warn(msg):
@@ -79,7 +81,7 @@ def _event_size(eventId, f):
         return _read_TEXT_event_size(f)
 
 
-def _decode_playlist_item(itemData):
+def _decode_playlist_item(itemData: bytes) -> PlaylistItem:
     """Decode binary data for a single item in a playlist/arrangement."""
     # Notes:
     #   4-6 is always b'\x00P'
@@ -87,28 +89,27 @@ def _decode_playlist_item(itemData):
     #  ^(should i make warnings for these?)
     #   suspect they're something to do with performance mode (out of scope for now)
 
-    item = {
-        "start": btoi(itemData[0:4]),  # position in playlist, in ticks
-        "length": btoi(itemData[8:12]),
-        "track": 500 - btoi(itemData[12:16]),  # ie y position
-        "clipStart": btoi(itemData[24:28]),  # start of the clip, in ticks
-        "clipEnd": btoi(itemData[28:32]),
-        "miscStatus": itemData[16:20],  # contains muted bit, probs other stuff
-        "muted": itemData[19] & 32 != 0,
-        "selected": itemData[19] & 128 != 0,
-    }
-    # TODO make this a class
-
-    itemId = btoi(itemData[6:8])  # the indentifier for this item
+    itemId = btoi(itemData[6:8])  # the identifier for this item
     if itemId > 20480:
-        item["type"] = "pattern"
-        item["clipIndex"] = itemId - 20481
+        itemType = "pattern"
+        clipIndex = itemId - 20481
     else:
         # item is instead defined by the index of the audio clip/automation clip in the Channel list
-        item["type"] = "channel"  # TODO split into 'Automaion, Audio'(??)
-        item["clipIndex"] = itemId
+        itemType = "channel"
+        clipIndex = itemId
 
-    return item
+    return PlaylistItem(
+        start=btoi(itemData[0:4]),  # position in playlist, in ticks
+        length=btoi(itemData[8:12]),
+        track=500 - btoi(itemData[12:16]),  # ie y position
+        clipStart=btoi(itemData[24:28]),  # start of the clip, in ticks
+        clipEnd=btoi(itemData[28:32]),
+        misc=itemData[16:20],  # contains muted bit, probs other stuff
+        muted=itemData[19] & 32 != 0,
+        selected=itemData[19] & 128 != 0,
+        itemType=itemType,
+        clipIndex=clipIndex,
+    )
 
 
 EID_NAMES = {
@@ -199,12 +200,14 @@ EID_NAMES = {
     215: "FLP_ChanParams",
     # suspected events
     31: "IsPerformanceMode",  # 0 if off, 1 if on
+    95: "MixerTrackIcon",  # TODO check this is actually true
     98: "SlotIndex",  # comes after a plugin in this slot!
     99: "ArrangementIndex",
     100: "CurrentArrangement",
     145: "ChannelFilterGroup",  # the group this channel belongs to
     146: "CurrentChannelFilterGroup",  # 4294967295 for 'All'
     147: "InsertAudioOutputTarget",  # 4294967295 if (none), index of the output target otherwise.
+    149: "MixerTrackColor",
     154: "InsertAudioInputSource",  # 4294967295 if (none), index of the input source otherwise.
     156: "Tempo",
     203: "ChannelName",  # also applies to mixer slots!
@@ -224,45 +227,55 @@ EID_NAMES = {
     241: "ArrangementName",
     # TODO need to confirm these
     159: "FLP_Version_Minor",  # eg 2553,
-    # probably unimportant
-    # 236 : 'ChannelUnknown'
-    # 236 - one for each mixer channel.
+    236: "MixerTrackInfo",
+    # 236 - one for each mixer channel. possibly also encodes mutedness, volume,pan,stereo,eq,
     #    b'\x00\x00\x00\x00L\x00\x00\x00\x00\x00\x00\x00'    if Insert 1-125,
     #    b'\x00\x00\x00\x00\x0c\x00\x00\x00\x00\x00\x00\x00' if master or current.
-    # L is 0x4C, so it's only one bit different
 }
 
+ENAME_IDS = {v: k for k, v in EID_NAMES.items()}
 
-def eid_to_name(id):
+
+def eid_to_ename(id: int) -> str:
     if id in EID_NAMES:
         return EID_NAMES[id]
     else:
         return "UNKNOWN_" + str(id)
 
 
+def ename_to_eid(event_name: str) -> int:
+    if event_name.startswith("UNKNOWN_"):
+        return int(event_name[8:])
+    else:
+        return ENAME_IDS[event_name]
+
+
 # STATEFUL FILE PARSER
 
 
+@dataclass
 class ParserContext:
     currentArrangement: int = -1
+    currentArrangementTrack: int = -1
     currentPattern: int = -1
     currentChannel: int = -1
+    currentMixerTrack: int = -1
+    currentMixerTrackEffectSlot: int = -1
+    isMixerEffect: bool = False
+    project: Project = field(default_factory=Project)
 
-    project = {  # TODO give this a type signature
-        "projectInfo": {
-            "FLP_PatLength": 3,
-            "FLP_BlockLength": 4,
-            "NBeatDiv": 96,
-        },
-        "arrangements": [],
-        "channels": [],
-        "channelGroups": [],
-        "patterns": [],
+
+def _default_project_info():
+    """return a projectInfo dict with some sane defaults."""
+    return {
+        "FLP_PatLength": 4,
+        "FLP_BlockLength": 4,
+        "NBeatDiv": 96,
     }
 
 
 def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
-    eventName = eid_to_name(eventId)
+    eventName = eid_to_ename(eventId)
     project = ctx.project
     # convert numeric events into ints, otherwise leave as bytes
     if eventId < 192:
@@ -271,49 +284,89 @@ def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
     # event handlers
 
     def genericProject():
-        project["projectInfo"][eventName] = contents
+        project.projectInfo[eventName] = contents
 
     def genericChannel():
-        project["channels"][ctx.currentChannel][eventName] = contents
+        project.channels[ctx.currentChannel].misc[eventName] = contents
+
+    def genericChannelAppend():
+        if eventName not in project.channels[ctx.currentChannel].misc:
+            project.channels[ctx.currentChannel].misc[eventName] = []
+        project.channels[ctx.currentChannel].misc[eventName].append(contents)
+
+    def genericArrangement():
+        project.arrangements[ctx.currentArrangement].misc[eventName] = contents
 
     def genericPattern():
-        project["patterns"][ctx.currentPattern][eventName] = contents
+        project.patterns[ctx.currentPattern].misc[eventName] = contents
+
+    def genericMixerTrack():
+        project.mixerTracks[ctx.currentMixerTrack].misc[eventName] = contents
+
+    def genericMixerEffect():
+        effects = project.mixerTracks[ctx.currentMixerTrack].effects
+        if ctx.currentMixerTrackEffectSlot not in effects:
+            effects[ctx.currentMixerTrackEffectSlot] = MixerEffect()
+        effects[ctx.currentMixerTrackEffectSlot].misc[eventName] = contents
+
+    def genericChannelOrMixerEffect():
+        if ctx.isMixerEffect:
+            genericMixerEffect()
+        else:
+            genericChannel()
 
     def patternName():
-        genericPattern()
-        project["patterns"][ctx.currentPattern]["name"] = contents.decode("UTF-16-LE")
+        project.patterns[ctx.currentPattern].name = contents.decode("UTF-16-LE")
 
     def channelName():
-        # TODO this needs to be context-aware! mixer effects also use this
-        genericChannel()
-        project["channels"][ctx.currentChannel]["name"] = contents.decode("UTF-16-LE")
+        if ctx.isMixerEffect:
+            project.mixerTracks[ctx.currentMixerTrack].effects[
+                ctx.currentMixerTrackEffectSlot
+            ].name = contents.decode("UTF-16-LE")
+        else:
+            project.channels[ctx.currentChannel].name = contents.decode("UTF-16-LE")
+
+    def arrangementName():
+        project.arrangements[ctx.currentArrangement].name = contents.decode("UTF-16-LE")
+
+    def arrangementTrackName():
+        project.arrangements[ctx.currentArrangement].tracks[
+            ctx.currentArrangementTrack
+        ].name = contents.decode("UTF-16-LE")
+
+    def mixerTrackName():
+        project.mixerTracks[ctx.currentMixerTrack].name = contents.decode("UTF-16-LE")
 
     def newChannel():
         ctx.currentChannel = contents
-        if ctx.currentChannel >= len(project["channels"]):
-            project["channels"].append({})
+        ctx.isMixerEffect = False
+        if ctx.currentChannel >= len(project.channels):
+            project.channels.append(Channel())
 
     def newPattern():
         index = contents - 1
         ctx.currentPattern = index
-        if ctx.currentPattern >= len(project["patterns"]):
-            project["patterns"].append(
-                {"name": "Pattern {}".format(ctx.currentPattern + 1)}
-                # TODO make a class for this
-            )
+        if ctx.currentPattern >= len(project.patterns):
+            project.patterns.append(Pattern())
 
     def newArrangement():
         ctx.currentArrangement = contents
-        project["arrangements"].append(
-            {
-                "tracks": [],
-                "items": [],
-            }
-            # TODO make a class for this
+        project.arrangements.append(PlaylistArrangement())
+
+    def newMixerTrack():
+        ctx.currentMixerTrack = len(project.mixerTracks)
+        project.mixerTracks.append(MixerTrack(misc={eventName: contents}))
+
+    def newArrangementTrack():
+        ctx.currentArrangementTrack = len(
+            project.arrangements[ctx.currentArrangement].tracks
+        )
+        project.arrangements[ctx.currentArrangement].tracks.append(
+            ArrangementTrack(misc={eventName: contents})
         )
 
     def newChannelFilterGroup():
-        project["channelGroups"].append({"name": contents.decode("UTF-16-LE")})
+        project.channelFilterGroups.append({"name": contents.decode("UTF-16-LE")})
 
     def parsePlaylistData():
         bytesPerItem = 32
@@ -321,8 +374,12 @@ def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
         for item in range(numItems):
             itemData = contents[item * bytesPerItem : (item + 1) * bytesPerItem]
             item = _decode_playlist_item(itemData)
-            project["arrangements"][ctx.currentArrangement]["items"].append(item)
-        # print(len(project["arrangements"][ctx.currentArrangement]["items"]))
+            project.arrangements[ctx.currentArrangement].items.append(item)
+        # print(len(project.arrangements[ctx.currentArrangement].items))
+
+    def setCtxSlotIndex():
+        ctx.currentMixerTrackEffectSlot = contents
+        ctx.isMixerEffect = True
 
     handlerLUT = {
         # per-project
@@ -335,7 +392,6 @@ def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
         "FLP_WindowH": genericProject,
         "FLP_Text_Title": genericProject,
         "FLP_Text_Comment": genericProject,
-        "FLP_Text_SampleFileName": genericProject,
         "FLP_Text_URL": genericProject,
         "FLP_Text_CommentRTF": genericProject,
         "FLP_Version": genericProject,
@@ -368,6 +424,7 @@ def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
         "FLP_ChanType": genericChannel,
         "FLP_MixSliceNum": genericChannel,
         "FLP_FX": genericChannel,
+        "FLP_Text_SampleFileName": genericChannel,
         "FLP_Fade_Stereo": genericChannel,
         "FLP_CutOff": genericChannel,
         "FLP_PreAmp": genericChannel,
@@ -385,34 +442,54 @@ def _handle_flp_event(ctx: ParserContext, eventId: int, contents: bytes):
         "FLP_Delay": genericChannel,
         "FLP_ChanParams": genericChannel,
         "ChannelName": channelName,
-        "ChannelEnvelopeParams": genericChannel,
+        "ChannelEnvelopeParams": genericChannelAppend,
         "ChannelParams": genericChannel,
         "ChannelFilterGroup": genericChannel,
+        "UNKNOWN_32": genericChannel,
+        "UNKNOWN_97": genericChannel,
+        "UNKNOWN_143": genericChannel,
+        "UNKNOWN_144": genericChannel,
+        "UNKNOWN_221": genericChannel,
+        "UNKNOWN_229": genericChannel,
+        "UNKNOWN_228": genericChannelAppend,
+        "UNKNOWN_234": genericChannel,
+        # less confident about these, they only come up on one channel in the test file...
+        "UNKNOWN_150": genericChannel,
+        "UNKNOWN_157": genericChannel,
+        "UNKNOWN_158": genericChannel,
+        "UNKNOWN_164": genericChannel,
+        "UNKNOWN_142": genericChannel,
         # per-pattern
         "FLP_NewPat": newPattern,
         "FLP_Text_PatName": patternName,
         "PatternAutomationData": genericPattern,
         "PatternData": genericPattern,
         # context-aware (target changes based on position)
-        "FLP_Color": genericProject,
-        "FLP_Text_PluginName": genericProject,
-        "FLP_NewPlugin": genericProject,
-        "FLP_PluginParams": genericProject,
+        "FLP_Color": genericChannelOrMixerEffect,
+        "FLP_Text_PluginName": genericChannelOrMixerEffect,
+        "FLP_NewPlugin": genericChannelOrMixerEffect,
+        "FLP_PluginParams": genericChannelOrMixerEffect,
+        "UNKNOWN_155": genericChannelOrMixerEffect,
         # per-mixer track
-        "InsertAudioOutputTarget": genericProject,
-        "InsertAudioInputSource": genericProject,
-        "InsertName": genericProject,
-        "MixerTrackRouting": genericProject,
+        "MixerTrackInfo": newMixerTrack,
+        "InsertAudioOutputTarget": genericMixerTrack,
+        "InsertAudioInputSource": genericMixerTrack,
+        "InsertName": mixerTrackName,
+        "MixerTrackRouting": genericMixerTrack,
+        "MixerTrackColor": genericMixerTrack,
+        "MixerTrackIcon": genericMixerTrack,
         # per-mixer effect
-        "SlotIndex": None,
+        "SlotIndex": setCtxSlotIndex,
         # per-arrangement
         "ArrangementIndex": newArrangement,
-        "ArrangementName": None,
+        "ArrangementName": arrangementName,
         "PlaylistData": parsePlaylistData,
-        "TrackInfo": None,
-        "TrackName": None,
+        "UNKNOWN_36": genericArrangement,
+        # per-track-per-arrangement
+        "TrackInfo": newArrangementTrack,
+        "TrackName": arrangementTrackName,
         # other
-        "AutomationClipData": None,
+        "AutomationClipData": None,  # TODO what.how.
         "ChannelFilterGroupName": newChannelFilterGroup,
     }
 
@@ -502,25 +579,21 @@ def debug_print_flp_event(eventId, contents):
                         print(contents)
 
 
-def debug_print_main_playlist(project):
-    for item in project["arrangements"][0]["items"]:
+def debug_print_main_playlist(project: Project):
+    for item in project.arrangements[0].items:
         name = ""
-        if item["type"] == "channel":
-            name = project["channels"][item["clipIndex"]]["ChannelName"].decode(
-                "UTF-16-LE"
-            )
+        if item.itemType == "channel":
+            name = project.channels[item.clipIndex].name
         else:  # pattern
-            if item["clipIndex"] >= len(project["patterns"]):  # ghost pattern
-                name = "Pattern {} (ghost)".format(item["clipIndex"] + 1)
-            elif "FLP_Text_PatName" in project["patterns"][item["clipIndex"]]:
-                name = project["patterns"][item["clipIndex"]][
-                    "FLP_Text_PatName"
-                ].decode("UTF-16-LE")
+            if item.clipIndex >= len(project.patterns):  # ghost pattern
+                name = "Pattern {} (ghost)".format(item.clipIndex + 1)
+            elif project.patterns[item.clipIndex].name:
+                name = project.patterns[item.clipIndex].name
             else:
-                name = "Pattern {}".format(item["clipIndex"] + 1)
+                name = "Pattern {}".format(item.clipIndex + 1)
         print(
             "{} at Track {}, {}".format(
-                name, item["track"], fl_helpers.ticks_to_BST(project, item["start"])
+                name, item.track, fl_helpers.ticks_to_BST(project, item.start)
             )
         )
 
@@ -529,6 +602,10 @@ if __name__ == "__main__":
     PRINT_EVENTS = "-events" in sys.argv
     PRINT_VALUES = "-values" in sys.argv
     HASH_VALUES = "-hashvalues" in sys.argv
+
+    if len(sys.argv) < 2:
+        print("Usage: flp_read.py path_to_flp")
+        exit(1)
 
     INPUTFILE = sys.argv[-1]
 
