@@ -17,9 +17,9 @@ DATACHUNKID = b"FLdt"
 
 
 # UTIL FUNCTIONS
-def itob(x: int, length: int) -> bytes:
+def itob(x: int, length: int, endianness="little") -> bytes:
     """Convert an integer to a bytes object, padded to `length`"""
-    return int.to_bytes(x, length, "little")
+    return int.to_bytes(x, length, endianness)
 
 
 def _str_to_UTF16(s: str) -> bytes:
@@ -60,6 +60,9 @@ def _write_event(
         f.write(_event_size_to_bytes(eventSize))  # size of event
         f.write(data)
 
+    if DEBUG:
+        fd.write(f"{eventId} {eid_to_ename(eventId)}\n{data}\n")
+
 
 def _make_arrangement_data(arrangement: PlaylistArrangement) -> bytes:
     size = 32 * len(arrangement.items)
@@ -67,17 +70,16 @@ def _make_arrangement_data(arrangement: PlaylistArrangement) -> bytes:
     for item in arrangement.items:
         item_bytes = (
             itob(item.start, 4)  # 0-4
-            + b"\0\0"  # 4-6
+            + item.misc_4_6  # 4,5
             + itob(
                 item.clipIndex + 20481
-                if item.itemType == "channel"
+                if item.itemType == "pattern"
                 else item.clipIndex,
                 2,
-            )  # 6-8
+            )  # 6,7
             + itob(item.length, 4)  # 8-12
             + itob(500 - item.track, 4)  # 12-16
-            + item.misc  # 16-20
-            + b"\0\0\0\0"  # 20-24
+            + item.misc  # 16-24
             + itob(item.clipStart, 4)  # 24-28
             + itob(item.clipEnd, 4)  # 28-32
         )
@@ -146,72 +148,80 @@ def write_FLP(filepath: str, project: Project) -> None:
 
     # write pattern data
     for i, pattern in enumerate(project.patterns):
-        _write_event(f, 65, i + 1)
+        _write_event(f, "FLP_NewPat", i + 1)
         if pattern.name:
-            _write_event(f, 193, _str_to_UTF16(pattern.name))
+            _write_event(f, "FLP_Text_PatName", _str_to_UTF16(pattern.name))
         for miscKey in ["PatternAutomationData", "PatternData"]:
             if miscKey in pattern.misc:
                 _write_event(f, miscKey, pattern.misc[miscKey])
 
-    # 226 Unknown
-    # 226 Unknown
-    # 226 Unknown
-    # TODO what are these events??
+    for data in project.projectInfo["UNKNOWN_226"]:
+        _write_event(f, "UNKNOWN_226", data)
 
     # write automation clip data
     for channel in project.channels:
-        # if channel.type == "automationClip":
-        # _write_event(f, "AutomationClipData", None)
-        # TODO need to parse it first
-        pass
+        if channel.type == "automation_clip":
+            _write_event(f, "AutomationClipData", channel.data)
 
     # write channel data
     for i, channel in enumerate(project.channels):
         _write_event(f, "FLP_NewChan", i)
         # if "name" in channel: #(pretty sure this is mandatory)
+
+        CHANNEL_TYPE_MAP = {
+            "sampler": 0,
+            "generator": 2,
+            "audio_clip": 4,
+            "automation_clip": 5,
+        }
+        _write_event(f, "FLP_ChanType", CHANNEL_TYPE_MAP[channel.type])
+
+        _write_event(f, "FLP_Text_PluginName", channel.misc["FLP_Text_PluginName"])
+        _write_event(f, "FLP_NewPlugin", channel.misc["FLP_NewPlugin"])
+
         _write_event(f, "ChannelName", _str_to_UTF16(channel.name))
 
         for miscKey in [
-            "FLP_NewPlugin",
+            "UNKNOWN_155",
+            "FLP_Color",
+            "FLP_PluginParams",
             "FLP_Enabled",
-            "FLP_LoopType",
-            "FLP_ChanType",
-            "FLP_MixSliceNum",
+            "FLP_Delay",
+            "FLP_Reverb",
+            "FLP_IntStretch",
+            "FLP_ShiftDelay",
+            "UNKNOWN_97",
             "FLP_FX",
-            "FLP_Fade_Stereo",
+            "FLP_FX3",
             "FLP_CutOff",
+            "FLP_Resonance",
             "FLP_PreAmp",
             "FLP_Decay",
             "FLP_Attack",
-            "FLP_Resonance",
             "FLP_StDel",
-            "FLP_FX3",
-            "FLP_ShiftDelay",
             "FLP_FXSine",
-            "FLP_CutCutBy",
-            "FLP_Reverb",
-            "FLP_IntStretch",
-            "FLP_SSNote",
-            "FLP_Delay",
-            "FLP_ChanParams",
-            "ChannelName",
-            "UNKNOWN_228",
-            "ChannelEnvelopeParams",
+            "FLP_Fade_Stereo",
+            "FLP_MixSliceNum",
             "ChannelParams",
+            "UNKNOWN_229",
+            "UNKNOWN_221",
+            "FLP_ChanParams",
+            "FLP_CutCutBy",
+            "UNKNOWN_144",
             "ChannelFilterGroup",
             "UNKNOWN_234",
             "UNKNOWN_32",
-            "UNKNOWN_97",
+            "UNKNOWN_228",
+            "FLP_SSNote",
+            "ChannelEnvelopeParams",
             "UNKNOWN_143",
-            "UNKNOWN_144",
-            "UNKNOWN_221",
-            "UNKNOWN_229",
+            "FLP_LoopType",
+            "FLP_Text_SampleFileName",
+            "UNKNOWN_142",
             "UNKNOWN_150",
             "UNKNOWN_157",
             "UNKNOWN_158",
             "UNKNOWN_164",
-            "FLP_Text_SampleFileName",
-            "UNKNOWN_142",
         ]:
             if miscKey in channel.misc:
                 if isinstance(channel.misc[miscKey], list):
@@ -243,25 +253,41 @@ def write_FLP(filepath: str, project: Project) -> None:
     # write mixer data
     for mixerTrack in project.mixerTracks:
         _write_event(f, "MixerTrackInfo", mixerTrack.misc["MixerTrackInfo"])
-        if mixerTrack.name:
-            _write_event(f, "InsertName", _str_to_UTF16(mixerTrack.name))
-        for miscKey in ["PatternAutomationData", "PatternData"]:
-            if miscKey in mixerTrack.misc:
-                _write_event(f, miscKey, mixerTrack.misc[miscKey])
         # write mixer effect slots
         for i in range(10):
+            # if i != 0:
             _write_event(f, "SlotIndex", i)
             if i in mixerTrack.effects:
                 effect = mixerTrack.effects[i]
                 for miscKey in [
-                    "FLP_Text_PlLuginName",
+                    "FLP_Text_PluginName",
                     "FLP_NewPlugin",
+                ]:
+                    if miscKey in effect.misc:
+                        _write_event(f, miscKey, effect.misc[miscKey])
+                if effect.name:
+                    _write_event(f, "ChannelName", _str_to_UTF16(effect.name))
+                for miscKey in [
                     "UNKNOWN_155",
                     "FLP_Color",
                     "FLP_PluginParams",
                 ]:
                     if miscKey in effect.misc:
                         _write_event(f, miscKey, effect.misc[miscKey])
+            # if i == 0:
+            #     _write_event(f, "SlotIndex", i)  # lol
+        # mixer track postamble
+        for miscKey in [
+            "MixerTrackRouting",
+            "InsertAudioInputSource",
+            "InsertAudioOutputTarget",
+            "MixerTrackColor",
+            "MixerTrackIcon",
+        ]:
+            if miscKey in mixerTrack.misc:
+                _write_event(f, miscKey, mixerTrack.misc[miscKey])
+        if mixerTrack.name:
+            _write_event(f, "InsertName", _str_to_UTF16(mixerTrack.name))
 
     # more globals, see grammar
     writeGenericProjectEvent(225)  # this is massive...
@@ -298,6 +324,9 @@ if __name__ == "__main__":
     test_event_size_to_bytes()
 
     from flp_read import load_FLP
+
+    DEBUG = 1
+    fd = open("test_comment_OUT_DEBUG.txt", "w")
 
     print("loading...")
     project = load_FLP("test/files/test_comment.flp")

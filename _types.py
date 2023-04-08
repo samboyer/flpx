@@ -21,6 +21,7 @@ class PlaylistItem:
     # TODO make PatternItem, AutomationClipItem, AudioClipItem subclasses when doing 21.0 support, so they can have extra parameters
     clipIndex: int  # index of this item's Pattern or Audio CLip/Automation Clip generator, depending on its type.
 
+    misc_4_6: bytes
     misc: bytes
     """Additional unknown bytes."""
     # TODO should this class have a reference to the Pattern/AudioClip/AutomationClip generator object?
@@ -51,6 +52,10 @@ class Channel:
     """Object representing a Generator (synth, audioclip, automation clip etc)"""
 
     name: str = ""
+
+    type: str = ""  # TODO make this an enum 'generator, audio_clip, automation_clip'
+
+    data: Optional[bytes] = None
 
     misc: dict[str, Union[int, bytes]] = field(default_factory=dict)
     """Dictionary of data we don't currently know how to handle.
